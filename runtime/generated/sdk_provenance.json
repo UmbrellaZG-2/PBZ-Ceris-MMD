@@ -1,0 +1,13 @@
+{
+  "ue4ss_commit": "1ceefac8b8c286f0fb3eb62b4aae075ff81df0bd",
+  "ue4ss_dll_sha256": "e1fb9a7e1d868afef6a091c2012e711c3ec47f05d100ba37f9631a4f75f31df2",
+  "public_header_sha256": "4cbe2b539989b2ef8b006b413d6cdc833ab127bab9441006cdd30a9e0bb8c4ec",
+  "adapter_header_sha256": "3d6e24de3222acfb95d5613b78e8a6251636eeb13d29db3bccce5f6c0ab3f2cc",
+  "export_count": 4504,
+  "private_sdk_used": false,
+  "guessed_game_object_offsets": false,
+  "header_edits": [
+    "GUI include replaced by forward declaration",
+    "GUI callback alias expanded to identical function pointer type"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+	"ok": true,
+	"in_game_verified": false,
+	"bone_count": 943,
+	"failed_bones": 0,
+	"max_position_error_cm": 1.464821375527116e-14,
+	"max_angle_error_rad": 4.2146848510894035e-08,
+	"max_morph_error": 0,
+	"source_inputs": 51,
+	"source_position_error_cm": 0,
+	"source_valid": true,
+	"errors": [],
+	"post_process": true
+}

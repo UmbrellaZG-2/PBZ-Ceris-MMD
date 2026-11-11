@@ -1,0 +1,13 @@
+**/Binaries/
+**/Intermediate/
+**/Saved/
+**/DerivedDataCache/
+**/.vs/
+**/__pycache__/
+*.pyc
+*.log
+*.dmp
+*.mp4
+*.blend1
+release/
+output/
