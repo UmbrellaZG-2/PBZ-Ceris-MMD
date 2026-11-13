@@ -1,5 +1,5 @@
 param(
-  [string]$Out = (Join-Path $PSScriptRoot '..\output\CerisMMD_PBZ_v37_v40.zip')
+  [string]$Out = (Join-Path $PSScriptRoot '..\output\CerisMMD_PBZ_v37_v41.zip')
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))

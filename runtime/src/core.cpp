@@ -19,6 +19,10 @@ namespace {
 // 40 MMD units = 3.5 m: far beyond any legitimate cloth/hair deformation, far below the
 // multi-metre smears a broken Bullet step produces.
 constexpr float kPhysicsExplosionLimit=40.0f;
+// Cloth bones hang on their parent and never travel far from the animated pose; a
+// couple of body lengths of drift means the skirt was knocked loose (fast wall-run
+// rotation, hard landing, teleport). Snap those frames back to the animated pose.
+constexpr float kClothSnapLimit=4.5f;
 thread_local std::string last_error;
 struct FrameGrip {
  int clavicle,upper,elbow,hand;std::vector<int> upper_helpers,lower_helpers;
@@ -38,6 +42,12 @@ struct Runtime {
     std::vector<std::unique_ptr<btCollisionShape>> pelvis_shapes;
     int pelvis_calibrations=0;
     int physics_rescues=0;
+    // Cloth diagnostics: skirt/tie bones, their drift from the animated pose and the
+    // radius of the bone cloud. Lets the log tell "cloth flew away" from "cloth collapsed".
+    std::vector<int> cloth_bones;
+    float cloth_dev=0,cloth_radius=0;
+    glm::vec3 cloth_center{0};
+    int cloth_rescues=0,cloth_worst_bone=-1;
     explicit Runtime(const char* path) {
         if (!path || !saba::ReadPMXFile(&source,path) || !model.Load(path,""))
             throw std::runtime_error("PMX load failed");
@@ -72,6 +82,9 @@ struct Runtime {
                 {"shape_type",rb->getCollisionShape()->getShapeType()}});
         }
         calibrate_pelvis_colliders();
+        for(size_t i=0;i<source.m_bones.size();++i){const auto& n=source.m_bones[i].m_name;
+            if(n.find(u8"hq_")!=std::string::npos||n.find(u8"qq_")!=std::string::npos||n.find(u8"tc_")!=std::string::npos)
+                cloth_bones.push_back(int(i));}
         j["pelvis_calibrations"]=pelvis_calibrations;
         inventory=j.dump(2);
         anim_globals.resize(nodes->GetNodeCount());
@@ -272,8 +285,27 @@ int ceris_step_global(void* h,const CerisGlobalInput* drivers,int count,const fl
   float worst=0;
   for(size_t i=0;i<nodes->GetNodeCount();++i)
    worst=std::max(worst,glm::length(glm::vec3(nodes->GetMMDNode(i)->GetGlobalTransform()[3])-r.anim_globals[i]));
+  // Cloth-only view of the same drift: it stays small in normal play and blows up when the
+  // skirt is knocked off the hip, which is what "the skirt vanished" looks like on screen.
+  float cloth=0;glm::vec3 cloth_center(0);int cloth_worst=-1;
+  for(int i:r.cloth_bones){
+   glm::vec3 p(nodes->GetMMDNode(i)->GetGlobalTransform()[3]);
+   float d=glm::length(p-r.anim_globals[i]);
+   if(d>cloth){cloth=d;cloth_worst=i;}
+   cloth_center+=p;
+  }
+  if(!r.cloth_bones.empty()){
+   cloth_center/=float(r.cloth_bones.size());
+   float radius=0;
+   for(int i:r.cloth_bones)radius=std::max(radius,glm::length(glm::vec3(nodes->GetMMDNode(i)->GetGlobalTransform()[3])-cloth_center));
+   r.cloth_dev=cloth;r.cloth_center=cloth_center;r.cloth_radius=radius;r.cloth_worst_bone=cloth_worst;
+  }
   if(worst>kPhysicsExplosionLimit){
    ++r.physics_rescues;m.ResetPhysics();m.UpdateNodeAnimation(false);
+  }else if(cloth>kClothSnapLimit){
+   // Rebuild the cloth from the animated pose instead of letting a detached skirt hang
+   // somewhere off camera until the next instance rebuild.
+   ++r.cloth_rescues;m.ResetPhysics();m.UpdateNodeAnimation(false);
   }
   m.EndAnimation();
   for(size_t i=0;i<nodes->GetNodeCount();++i)if(!finite(nodes->GetMMDNode(i)->GetGlobalTransform()))throw std::runtime_error("Nonfinite global bone output");
@@ -293,7 +325,7 @@ struct Game {
  std::vector<glm::quat> bind_rotations;
  std::vector<Grip> grips;
  glm::mat3 convert{1};float units=8.8f;glm::vec3 bind_offset{0};
- glm::vec3 origin{0},last_location{0};bool initialized=false;int input_count=0,center_index=2,pelvis_input=0;
+ glm::vec3 origin{0},last_location{0};glm::quat last_world_r{1,0,0,0};bool initialized=false;int input_count=0,center_index=2,pelvis_input=0;
  glm::vec3 center_bind{0},pelvis_bind{0};float grip_error_cm=0;
  Game(const char* pmx,const char* plan):runtime(std::make_unique<Runtime>(pmx)){
   std::ifstream stream(std::filesystem::u8path(plan));nlohmann::json j;stream>>j;
@@ -329,12 +361,26 @@ int ceris_game_saba_matrices(void* h,float* out,int n){if(!h)return 0;return cer
 float ceris_game_grip_error_cm(void* h){return h?static_cast<Game*>(h)->grip_error_cm:0;}
 int ceris_game_physics_rescues(void* h){return h?static_cast<Game*>(h)->runtime->physics_rescues:0;}
 int ceris_game_pelvis_calibrations(void* h){return h?static_cast<Game*>(h)->runtime->pelvis_calibrations:0;}
+int ceris_game_cloth_stats(void* h,float* out,int n){
+  if(!h||!out||n<8)return 0;const auto& r=*static_cast<Game*>(h)->runtime;
+  out[0]=r.cloth_dev;out[1]=r.cloth_center.x;out[2]=r.cloth_center.y;out[3]=r.cloth_center.z;
+  out[4]=r.cloth_radius;out[5]=float(r.cloth_bones.size());out[6]=float(r.cloth_rescues);out[7]=float(r.cloth_worst_bone);
+  return 1;
+}
 int ceris_game_step(void* h,const CerisUETransform* source,int ns,const CerisUETransform* world,const float* morphs,int nm,float dt,CerisUETransform* out,int no){
  return checked([&]{
   if(!h||!source||!world||!out)throw std::runtime_error("Null game frame");auto& g=*static_cast<Game*>(h);
   if(ns!=g.input_count||no!=int(g.bind_rotations.size())||!std::isfinite(dt)||dt<0)throw std::runtime_error("Game frame schema mismatch");
   const glm::vec3 world_t=ut(*world);const glm::mat3 world_r=glm::mat3_cast(uq(*world));const glm::mat3 ci=glm::inverse(g.convert);
-  bool reset=!g.initialized||glm::length(world_t-g.last_location)>500.f||dt>.25f;
+  const glm::quat world_q=glm::normalize(uq(*world));
+  // Wall-runs and vaults snap the actor by 30-90 deg between two frames. Bone 1 carries that
+  // rotation into the physics world, and the skirt joints (translation locked, rotation
+  // +/-0.03..0.09 rad) cannot absorb it: the cloth is flung a metre off the hip and never
+  // recovers, which is what "the skirt disappeared" looks like in game. Treat such a snap as
+  // a physics restart so the cloth is rebuilt from the new pose instead of being dragged.
+  const float world_turn=2.f*std::acos(std::min(1.f,std::abs(glm::dot(world_q,g.last_world_r))));
+  bool reset=!g.initialized||glm::length(world_t-g.last_location)>500.f||dt>.25f||world_turn>glm::radians(25.f);
+  g.last_world_r=world_q;
   // The MMD physics world owns a fixed ground plane at the model-local origin (saba's
   // MMDPhysics::Create) and the pose written back is component-relative: the component
   // transform already carries the world motion. Letting the model travel inside that local
