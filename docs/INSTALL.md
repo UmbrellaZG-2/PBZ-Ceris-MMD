@@ -1,6 +1,8 @@
 # 安装说明
 
-适用于 `CerisMMD_PBZ_v37_v38.zip`（资源包 v37 + 运行库 v38.0）。
+适用于 `CerisMMD_PBZ_v37_v40.zip`（资源包 v37 + 运行库 v40.0）。
+
+> 已有旧安装：只需替换 `platform\steam\ue4ss\Mods\CerisFullMMD\dlls\main.dll` 即可，`game_plan.json`、`model.pmx` 与资源包不变。
 
 ## 0. 前置条件
 
@@ -60,14 +62,15 @@ CerisProbe : 0
 检查 `PBZ\platform\steam\ue4ss\Mods\CerisFullMMD\runtime.log`：
 
 ```text
-bridge_loaded; runtime=38.0; grip_constraints=2; waiting_for_MMDABI_3701
-instance_created; original_bones=943; rigids=785; joints=1306; morphs=29
-pose_applied frames=1 step_ms=...
+bridge_loaded; runtime=40.0; pelvis_calibration=1; grip_constraints=2; waiting_for_MMDABI_3701
+instance_created; original_bones=943; rigids=785; joints=1306; morphs=29; pelvis_calibrations=2
+pose_applied frames=1 step_ms=... grip_max_error_cm=... physics_rescues=0
 ```
 
 - 出现 `bridge_loaded` 表示运行库已被 UE4SS 加载；
 - 出现 `instance_created` 表示角色实例已创建；
-- `pose_applied` 持续刷新表示每帧姿态正常提交。
+- `pose_applied` 持续刷新表示每帧姿态正常提交；`physics_rescues` 应恒为 0。
+- `pelvis_calibrations=2` 表示裙摆/臀部穿模修复（v40）已生效：两只臀部胶囊被校准为 group 0、mask 0xfffe、半径 1.25。若为 0，说明 `model.pmx` 结构不符（换过模型），需按 `docs/v40_裙摆穿模修复记录.md` 重新确认刚体名。
 
 若没有该文件，检查 `PBZ\platform\steam\ue4ss\UE4SS.log` 是否有 `Mod 'CerisFullMMD' has enabled.txt, starting mod.`。
 

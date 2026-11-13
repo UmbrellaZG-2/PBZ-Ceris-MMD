@@ -16,6 +16,9 @@
 #include <string>
 
 namespace {
+// 40 MMD units = 3.5 m: far beyond any legitimate cloth/hair deformation, far below the
+// multi-metre smears a broken Bullet step produces.
+constexpr float kPhysicsExplosionLimit=40.0f;
 thread_local std::string last_error;
 struct FrameGrip {
  int clavicle,upper,elbow,hand;std::vector<int> upper_helpers,lower_helpers;
@@ -27,6 +30,14 @@ struct Runtime {
     std::string inventory;
     std::vector<saba::PMXNode*> append_nodes;
     std::vector<FrameGrip> frame_grips;
+    std::vector<glm::vec3> anim_globals;
+    // The authored pelvis proxies are wrong for this runtime: M-下半身 sits in collision
+    // group 6 (which the group-6 skirt bodies exclude) and both capsules are narrower than
+    // the hip skin, so the rear skirt settles inside the buttock. Calibration retunes the
+    // live Bullet bodies; the PMX asset itself stays untouched.
+    std::vector<std::unique_ptr<btCollisionShape>> pelvis_shapes;
+    int pelvis_calibrations=0;
+    int physics_rescues=0;
     explicit Runtime(const char* path) {
         if (!path || !saba::ReadPMXFile(&source,path) || !model.Load(path,""))
             throw std::runtime_error("PMX load failed");
@@ -60,8 +71,40 @@ struct Runtime {
                 {"mask",int(uint16_t(proxy->m_collisionFilterMask))}, {"kinematic",rb->isKinematicObject()},
                 {"shape_type",rb->getCollisionShape()->getShapeType()}});
         }
+        calibrate_pelvis_colliders();
+        j["pelvis_calibrations"]=pelvis_calibrations;
         inventory=j.dump(2);
+        anim_globals.resize(nodes->GetNodeCount());
     }
+    void calibrate_pelvis_colliders() {
+        // MMDRigidBody::Create hands the PMX "non-collision group" mask to
+        // btDynamicsWorld::addRigidBody as the ALLOW mask, so the authored bit test is
+        // inverted: M-下半身 (group 6, mask 0xffbe) can never touch the group-6 skirt.
+        // Both pelvis capsules are also ~1 unit narrower than the hip skin, which lets the
+        // rear panel settle inside the buttock. Retune the live bodies only.
+        struct Tuning {const char* name; uint8_t group; uint16_t mask; float radius;};
+        static const Tuning tuning[] = {
+            {u8"M-下半身", 0, 0xfffe, 1.25f},
+            {u8"下半身",   0, 0xfffe, 1.25f},
+        };
+        auto* bodies=model.GetPhysicsManager()->GetRigidBodys();
+        for (size_t i=0;i<source.m_rigidbodies.size();++i) {
+            const auto& authored=source.m_rigidbodies[i];
+            for (const auto& t:tuning) {
+                if (authored.m_name!=t.name) continue;
+                if (authored.m_shape!=saba::PMXRigidbody::Shape::Capsule) continue;
+                auto* rb=(*bodies)[i]->GetRigidBody();
+                auto* proxy=rb->getBroadphaseProxy();
+                proxy->m_collisionFilterGroup=btBroadphaseProxy::CollisionFilterGroups(1<<t.group);
+                proxy->m_collisionFilterMask=t.mask;
+                auto shape=std::make_unique<btCapsuleShape>(t.radius,authored.m_shapeSize.y);
+                rb->setCollisionShape(shape.get());
+                pelvis_shapes.push_back(std::move(shape));
+                ++pelvis_calibrations;
+            }
+        }
+    }
+    void update_physics(float dt) { model.UpdatePhysicsAnimation(dt); }
 };
 Runtime& get(void* h) { if(!h) throw std::runtime_error("Null runtime"); return *static_cast<Runtime*>(h); }
 template<class F> int checked(F f) { try { f(); last_error.clear(); return 1; } catch(const std::exception& e) {last_error=e.what(); return 0;} }
@@ -219,7 +262,20 @@ int ceris_step_global(void* h,const CerisGlobalInput* drivers,int count,const fl
    n->UpdateLocalTransform();n->UpdateGlobalTransform();
   }
   for(size_t i=0;i<m.GetIKManager()->GetIKSolverCount();++i)m.GetIKManager()->GetMMDIKSolver(i)->Enable(true);
-  m.UpdateNodeAnimation(false);if(reset)m.ResetPhysics();m.UpdatePhysicsAnimation(dt);m.UpdateNodeAnimation(true);m.EndAnimation();
+  m.UpdateNodeAnimation(false);if(reset)m.ResetPhysics();
+  // Snapshot the posed skeleton so a ballistic blow-out can be rolled back below.
+  for(size_t i=0;i<nodes->GetNodeCount();++i)r.anim_globals[i]=glm::vec3(nodes->GetMMDNode(i)->GetGlobalTransform()[3]);
+  r.update_physics(dt);m.UpdateNodeAnimation(true);
+  // Cloth and hair never travel metres away from the bone they hang on: anything past a few
+  // body lengths means the Bullet step exploded (hard landing, tunnelling, teleport). Rebuild
+  // the frame from the animated pose instead of handing the game a smeared rig.
+  float worst=0;
+  for(size_t i=0;i<nodes->GetNodeCount();++i)
+   worst=std::max(worst,glm::length(glm::vec3(nodes->GetMMDNode(i)->GetGlobalTransform()[3])-r.anim_globals[i]));
+  if(worst>kPhysicsExplosionLimit){
+   ++r.physics_rescues;m.ResetPhysics();m.UpdateNodeAnimation(false);
+  }
+  m.EndAnimation();
   for(size_t i=0;i<nodes->GetNodeCount();++i)if(!finite(nodes->GetMMDNode(i)->GetGlobalTransform()))throw std::runtime_error("Nonfinite global bone output");
  });
 }
@@ -271,14 +327,21 @@ void ceris_game_destroy(void* h){delete static_cast<Game*>(h);}
 int ceris_game_rigid_matrices(void* h,float* out,int n){if(!h)return 0;return ceris_rigid_matrices(static_cast<Game*>(h)->runtime.get(),out,n);}
 int ceris_game_saba_matrices(void* h,float* out,int n){if(!h)return 0;return ceris_bone_matrices(static_cast<Game*>(h)->runtime.get(),out,n);}
 float ceris_game_grip_error_cm(void* h){return h?static_cast<Game*>(h)->grip_error_cm:0;}
+int ceris_game_physics_rescues(void* h){return h?static_cast<Game*>(h)->runtime->physics_rescues:0;}
+int ceris_game_pelvis_calibrations(void* h){return h?static_cast<Game*>(h)->runtime->pelvis_calibrations:0;}
 int ceris_game_step(void* h,const CerisUETransform* source,int ns,const CerisUETransform* world,const float* morphs,int nm,float dt,CerisUETransform* out,int no){
  return checked([&]{
   if(!h||!source||!world||!out)throw std::runtime_error("Null game frame");auto& g=*static_cast<Game*>(h);
   if(ns!=g.input_count||no!=int(g.bind_rotations.size())||!std::isfinite(dt)||dt<0)throw std::runtime_error("Game frame schema mismatch");
   const glm::vec3 world_t=ut(*world);const glm::mat3 world_r=glm::mat3_cast(uq(*world));const glm::mat3 ci=glm::inverse(g.convert);
   bool reset=!g.initialized||glm::length(world_t-g.last_location)>500.f||dt>.25f;
-  if(reset){g.origin=world_t;g.initialized=true;}g.last_location=world_t;
-  const glm::vec3 root_t=ci*(world_t-g.origin)/g.units;
+  // The MMD physics world owns a fixed ground plane at the model-local origin (saba's
+  // MMDPhysics::Create) and the pose written back is component-relative: the component
+  // transform already carries the world motion. Letting the model travel inside that local
+  // physics world therefore only drags the ballistic bones (cloth, hair) against the plane,
+  // which smears the body after a fall. Re-anchor every frame so root_t stays zero.
+  g.origin=world_t;g.initialized=true;g.last_location=world_t;
+  const glm::vec3 root_t(0);
   const glm::mat3 root_r=ci*world_r*g.convert;
   std::vector<CerisGlobalInput> inputs;inputs.reserve(g.drivers.size()+2);
   const glm::vec3 root_bind=g.runtime->source.m_bones[1].m_position*glm::vec3(1,1,-1);

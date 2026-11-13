@@ -25,6 +25,8 @@ CERIS_API void ceris_game_destroy(void* handle);
 CERIS_API int ceris_game_rigid_matrices(void* handle,float* output,int float_count);
 CERIS_API int ceris_game_saba_matrices(void* handle,float* output,int float_count);
 CERIS_API float ceris_game_grip_error_cm(void* handle);
+CERIS_API int ceris_game_physics_rescues(void* handle);
+CERIS_API int ceris_game_pelvis_calibrations(void* handle);
 CERIS_API int ceris_game_step(void* handle,const CerisUETransform* source,int source_count,
                              const CerisUETransform* component_world,const float* morphs,int morph_count,
                              float seconds,CerisUETransform* output,int output_count);
