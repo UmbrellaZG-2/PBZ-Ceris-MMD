@@ -48,7 +48,7 @@ struct State {
  std::unordered_map<UObject*,std::unique_ptr<Runtime>> instances;
  std::array<float,29> morphs{};Clock::time_point config_check{};
  int inputs=0;uint64_t errors=0;
- State(){std::ifstream f(root/L"game_plan.json");nlohmann::json j;f>>j;inputs=int(j.at("input_names").size());if(inputs<1||inputs>128)throw std::runtime_error("Invalid game plan");log("bridge_loaded; runtime=41.0; pelvis_calibration=1; cloth_diagnostics=1; grip_constraints="+std::to_string(j.value("grips",nlohmann::json::array()).size())+"; waiting_for_MMDABI_3701");}
+ State(){std::ifstream f(root/L"game_plan.json");nlohmann::json j;f>>j;inputs=int(j.at("input_names").size());if(inputs<1||inputs>128)throw std::runtime_error("Invalid game plan");log("bridge_loaded; runtime=42.0; pelvis_calibration=1; hair_calibration=1; cloth_diagnostics=1; grip_constraints="+std::to_string(j.value("grips",nlohmann::json::array()).size())+"; waiting_for_MMDABI_3701");}
  void log(const std::string& line){std::ofstream f(root/L"runtime.log",std::ios::app);f<<GetTickCount64()<<" "<<line<<"\n";}
  void config(){
   auto now=Clock::now();if(now-config_check<std::chrono::seconds(1))return;config_check=now;
@@ -76,7 +76,7 @@ struct State {
    for(auto it=instances.begin();it!=instances.end();)if(now-it->second->last>std::chrono::seconds(10))it=instances.erase(it);else ++it;
    auto& r=instances[object];if(!r||now-r->last>std::chrono::seconds(1)){
     r=std::make_unique<Runtime>();auto pmx=(root/L"model.pmx").u8string(),plan=(root/L"game_plan.json").u8string();
-    r->handle=ceris_game_create(pmx.c_str(),plan.c_str());if(!r->handle)throw std::runtime_error(ceris_error());log("instance_created; original_bones=943; rigids=785; joints=1306; morphs=29; pelvis_calibrations="+std::to_string(ceris_game_pelvis_calibrations(r->handle)));
+    r->handle=ceris_game_create(pmx.c_str(),plan.c_str());if(!r->handle)throw std::runtime_error(ceris_error());log("instance_created; original_bones=943; rigids=785; joints=1306; morphs=29; pelvis_calibrations="+std::to_string(ceris_game_pelvis_calibrations(r->handle))+" hair_calibrations="+std::to_string(ceris_game_hair_calibrations(r->handle)));
    }
    // Compute into owned staging storage; a failed frame never partially writes UE memory.
    std::array<CerisUETransform,943> staging{};
@@ -102,7 +102,7 @@ struct State {
 class Mod final:public RC::CppUserModBase {
  std::shared_ptr<State> state;
 public:
- Mod(){ModName=STR("Ceris Full MMD");ModVersion=STR("41.0");ModAuthors=STR("Ceris mod workspace");ModDescription=STR("Original PMX with skirt collision guard, fall protection and calibrated palm constraints");}
+ Mod(){ModName=STR("Ceris Full MMD");ModVersion=STR("42.0");ModAuthors=STR("Ceris mod workspace");ModDescription=STR("Original PMX with skirt collision guard, fall protection, calibrated palm constraints and hair-vs-body collision");}
  void on_unreal_init() override {
   try{state=std::make_shared<State>();auto s=state;
    RC::Unreal::Hook::RegisterProcessEventPostCallback([s](UObject* o,RC::Unreal::UFunction* f,void*){

@@ -3,10 +3,12 @@
 #include <Saba/Model/MMD/MMDPhysics.h>
 #include <Saba/Model/MMD/PMXFile.h>
 #include <btBulletDynamicsCommon.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -41,6 +43,11 @@ struct Runtime {
     // live Bullet bodies; the PMX asset itself stays untouched.
     std::vector<std::unique_ptr<btCollisionShape>> pelvis_shapes;
     int pelvis_calibrations=0;
+    // The front hair locks sink into the chest because the authored torso capsules sit
+    // ~0.3-0.9 units inside the dress surface. Retuning the live capsules is the same
+    // zero-asset-change approach used for the pelvis.
+    std::vector<std::unique_ptr<btCollisionShape>> hair_shapes;
+    int hair_calibrations=0;
     int physics_rescues=0;
     // Cloth diagnostics: skirt/tie bones, their drift from the animated pose and the
     // radius of the bone cloud. Lets the log tell "cloth flew away" from "cloth collapsed".
@@ -82,10 +89,12 @@ struct Runtime {
                 {"shape_type",rb->getCollisionShape()->getShapeType()}});
         }
         calibrate_pelvis_colliders();
+        calibrate_hair_colliders();
         for(size_t i=0;i<source.m_bones.size();++i){const auto& n=source.m_bones[i].m_name;
             if(n.find(u8"hq_")!=std::string::npos||n.find(u8"qq_")!=std::string::npos||n.find(u8"tc_")!=std::string::npos)
                 cloth_bones.push_back(int(i));}
         j["pelvis_calibrations"]=pelvis_calibrations;
+        j["hair_calibrations"]=hair_calibrations;
         inventory=j.dump(2);
         anim_globals.resize(nodes->GetNodeCount());
     }
@@ -117,9 +126,86 @@ struct Runtime {
             }
         }
     }
+    // Per-bone fit of the real mesh: where the hair sheet actually sits relative to the
+    // bone that drives it, and how far the torso skin reaches from the spine.
+    struct BoneFit { glm::vec3 centroid{0}; int count=0; float spread=0; };
+    std::vector<BoneFit> fit_bones() const {
+        std::vector<BoneFit> fit(source.m_bones.size());
+        std::vector<glm::vec3> sum(source.m_bones.size(),glm::vec3(0));
+        for(const auto& v:source.m_vertices){
+            int best=-1;float w=0;
+            for(int k=0;k<4;++k) if(v.m_boneIndices[k]>=0&&v.m_boneIndices[k]<int(fit.size())&&v.m_boneWeights[k]>w){
+                w=v.m_boneWeights[k];best=v.m_boneIndices[k];
+            }
+            if(best<0)continue;
+            sum[best]+=v.m_position*glm::vec3(1,1,-1);++fit[best].count;
+        }
+        for(size_t i=0;i<fit.size();++i) if(fit[i].count) fit[i].centroid=sum[i]/float(fit[i].count);
+        return fit;
+    }
+    void calibrate_hair_colliders() {
+        // The authored torso capsules sit well inside the dress (~0.9 units on the chest),
+        // so a front hair lock can sink that far before Bullet reacts; the hair boxes are
+        // also offset from the sheet they represent. Both sides are pulled onto the real
+        // mesh here; the PMX asset stays untouched.
+        const char* radius_env=std::getenv("CERIS_HAIR_RADIUS");
+        float radius_scale=radius_env?float(std::atof(radius_env)):2.0f;
+        const char* align_env=std::getenv("CERIS_HAIR_ALIGN");
+        float align=align_env?float(std::atof(align_env)):1.0f;
+        const char* box_env=std::getenv("CERIS_HAIR_BOX");
+        float box_scale=box_env?float(std::atof(box_env)):2.0f;
+        if(radius_scale==1.0f&&align==0.0f&&box_scale==1.0f)return;
+        if(!(radius_scale>=0.5f&&radius_scale<=3.0f))throw std::runtime_error("Invalid CERIS_HAIR_RADIUS");
+        if(!(align>=0.0f&&align<=1.5f))throw std::runtime_error("Invalid CERIS_HAIR_ALIGN");
+        if(!(box_scale>=0.5f&&box_scale<=3.0f))throw std::runtime_error("Invalid CERIS_HAIR_BOX");
+        static const char* torso[]={u8"上半身",u8"上半身2",u8"上半身2_1",u8"上半身2_2",u8"M-上半身2"};
+        auto* bodies=model.GetPhysicsManager()->GetRigidBodys();
+        auto* world=model.GetMMDPhysics()->GetDynamicsWorld();
+        auto fit=fit_bones();
+        for(size_t i=0;i<source.m_rigidbodies.size();++i){
+            const auto& authored=source.m_rigidbodies[i];
+            auto* rb=(*bodies)[i]->GetRigidBody();
+            bool torso_named=false;for(const char* n:torso)if(authored.m_name==n)torso_named=true;
+            if(torso_named&&authored.m_shape==saba::PMXRigidbody::Shape::Capsule&&radius_scale!=1.0f){
+                auto shape=std::make_unique<btCapsuleShape>(authored.m_shapeSize.x*radius_scale,authored.m_shapeSize.y);
+                rb->setCollisionShape(shape.get());hair_shapes.push_back(std::move(shape));
+                // A torso capsule that reaches the real skin must only catch hair: the
+                // skirt chain (group 6) keeps the authored envelope it was tuned against.
+                if(auto* proxy=rb->getBroadphaseProxy())proxy->m_collisionFilterMask=short(1<<5);
+                rb->activate();if(world)world->updateSingleAabb(rb);++hair_calibrations;continue;
+            }
+            if(authored.m_group!=5||authored.m_boneIndex<0||authored.m_boneIndex>=int(fit.size()))continue;
+            const auto& bf=fit[authored.m_boneIndex];
+            if(bf.count<5)continue;
+            glm::vec3 base=authored.m_shapeSize;std::unique_ptr<btCollisionShape> child;
+            if(align==0.0f&&box_scale==1.0f)continue;
+            switch(authored.m_shape){
+            case saba::PMXRigidbody::Shape::Sphere:
+                child=std::make_unique<btSphereShape>(base.x*box_scale);break;
+            case saba::PMXRigidbody::Shape::Box:
+                child=std::make_unique<btBoxShape>(btVector3(base.x*box_scale,base.y*box_scale,base.z*box_scale));break;
+            case saba::PMXRigidbody::Shape::Capsule:
+                child=std::make_unique<btCapsuleShape>(base.x*box_scale,base.y*box_scale);break;
+            default:continue;
+            }
+            // Offset from the authored collider centre to the centroid of the sheet it
+            // drives, expressed in the rigid body's own frame (PMX axes, z negated).
+            glm::mat4 rot=glm::rotate(glm::mat4(1),authored.m_rotate.y,glm::vec3(0,1,0))
+                         *glm::rotate(glm::mat4(1),authored.m_rotate.x,glm::vec3(1,0,0))
+                         *glm::rotate(glm::mat4(1),authored.m_rotate.z,glm::vec3(0,0,1));
+            glm::mat4 body=glm::mat4(1);body[3]=glm::vec4(authored.m_translate*glm::vec3(1,1,-1),1);body*=rot;
+            glm::vec3 offset=glm::vec3(glm::inverse(body)*glm::vec4(bf.centroid,1))*align;
+            btTransform child_tf;child_tf.setIdentity();
+            child_tf.setOrigin(btVector3(offset.x,offset.y,offset.z));
+            auto compound=std::make_unique<btCompoundShape>();
+            compound->addChildShape(child_tf,child.get());
+            hair_shapes.push_back(std::move(child));
+            rb->setCollisionShape(compound.get());hair_shapes.push_back(std::move(compound));
+            rb->activate();if(world)world->updateSingleAabb(rb);++hair_calibrations;
+        }
+    }
     void update_physics(float dt) { model.UpdatePhysicsAnimation(dt); }
-};
-Runtime& get(void* h) { if(!h) throw std::runtime_error("Null runtime"); return *static_cast<Runtime*>(h); }
+};Runtime& get(void* h) { if(!h) throw std::runtime_error("Null runtime"); return *static_cast<Runtime*>(h); }
 template<class F> int checked(F f) { try { f(); last_error.clear(); return 1; } catch(const std::exception& e) {last_error=e.what(); return 0;} }
 bool finite(const glm::mat4& m) { const float* p=glm::value_ptr(m); for(int i=0;i<16;++i) if(!std::isfinite(p[i]))return false; return true; }
 glm::quat rotation_between(glm::vec3 a,glm::vec3 b){
@@ -361,6 +447,7 @@ int ceris_game_saba_matrices(void* h,float* out,int n){if(!h)return 0;return cer
 float ceris_game_grip_error_cm(void* h){return h?static_cast<Game*>(h)->grip_error_cm:0;}
 int ceris_game_physics_rescues(void* h){return h?static_cast<Game*>(h)->runtime->physics_rescues:0;}
 int ceris_game_pelvis_calibrations(void* h){return h?static_cast<Game*>(h)->runtime->pelvis_calibrations:0;}
+int ceris_game_hair_calibrations(void* h){return h?static_cast<Game*>(h)->runtime->hair_calibrations:0;}
 int ceris_game_cloth_stats(void* h,float* out,int n){
   if(!h||!out||n<8)return 0;const auto& r=*static_cast<Game*>(h)->runtime;
   out[0]=r.cloth_dev;out[1]=r.cloth_center.x;out[2]=r.cloth_center.y;out[3]=r.cloth_center.z;

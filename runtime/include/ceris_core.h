@@ -26,6 +26,7 @@ CERIS_API int ceris_game_rigid_matrices(void* handle,float* output,int float_cou
 CERIS_API int ceris_game_saba_matrices(void* handle,float* output,int float_count);
 CERIS_API float ceris_game_grip_error_cm(void* handle);
 CERIS_API int ceris_game_physics_rescues(void* handle);
+CERIS_API int ceris_game_hair_calibrations(void* handle);
 CERIS_API int ceris_game_pelvis_calibrations(void* handle);
 // out[0]=max cloth drift (MMD units), out[1..3]=cloth bone centroid, out[4]=cloud radius,
 // out[5]=cloth bone count, out[6]=cloth snap-backs, out[7]=worst cloth bone index.

@@ -1,6 +1,6 @@
 # 安装说明
 
-适用于 `CerisMMD_PBZ_v37_v41.zip`（资源包 v37 + 运行库 v41.0）。
+适用于 `CerisMMD_PBZ_v37_v42.zip`（资源包 v37 + 运行库 v42.0）。
 
 > 已有旧安装：只需替换 `platform\steam\ue4ss\Mods\CerisFullMMD\dlls\main.dll` 即可，`game_plan.json`、`model.pmx` 与资源包不变。
 
@@ -62,8 +62,8 @@ CerisProbe : 0
 检查 `PBZ\platform\steam\ue4ss\Mods\CerisFullMMD\runtime.log`：
 
 ```text
-bridge_loaded; runtime=41.0; pelvis_calibration=1; cloth_diagnostics=1; grip_constraints=2; waiting_for_MMDABI_3701
-instance_created; original_bones=943; rigids=785; joints=1306; morphs=29; pelvis_calibrations=2
+bridge_loaded; runtime=42.0; pelvis_calibration=1; hair_calibration=1; cloth_diagnostics=1; grip_constraints=2; waiting_for_MMDABI_3701
+instance_created; original_bones=943; rigids=785; joints=1306; morphs=29; pelvis_calibrations=2 hair_calibrations=246
 pose_applied frames=1 step_ms=... grip_max_error_cm=... physics_rescues=0
 ```
 
@@ -72,6 +72,7 @@ pose_applied frames=1 step_ms=... grip_max_error_cm=... physics_rescues=0
 - `pose_applied` 持续刷新表示每帧姿态正常提交；`physics_rescues` 应恒为 0。
 - `pose_applied` 行里的 `cloth_dev` / `cloth_radius` 是布片漂移诊断（v41）：正常游玩 `cloth_dev` 应在 2 单位以内、`cloth_rescues` 增长很慢；偶尔出现 `cloth_snap` 行属于急转身/墙跑时的正常回弹，若每帧都在 `cloth_snap` 说明阈值对该动作太严。
 - `pelvis_calibrations=2` 表示裙摆/臀部穿模修复（v40）已生效：两只臀部胶囊被校准为 group 0、mask 0xfffe、半径 1.25。若为 0，说明 `model.pmx` 结构不符（换过模型），需按 `docs/v40_裙摆穿模修复记录.md` 重新确认刚体名。
+- `hair_calibrations=246` 表示头发穿模修复（v42）已生效：5 只躯干胶囊被放大到皮肤表面且只撞头发，241 个发刚体的碰撞盒被搬到对应发片上。若为 0，说明躯干/发束刚体名不符，按 `docs/v42_头发穿模修复记录.md` 重新核对。
 
 若没有该文件，检查 `PBZ\platform\steam\ue4ss\UE4SS.log` 是否有 `Mod 'CerisFullMMD' has enabled.txt, starting mod.`。
 
